@@ -2,9 +2,16 @@ require "json"
 require "rspec"
 
 
+
 ###########
-#Rental Assembler
-###########
+# Rental Assembler
+#
+# Extends a rental object's properties. 
+# Defaults for costs, commissions, and options - which can be overridden. 
+#
+#// RentalAssembler.new(rental)
+#//                .add_or_replace_cost(day: DayCost.new(discount: discount))    
+#
 
 class RentalAssembler
   attr_accessor :rental
@@ -14,7 +21,6 @@ class RentalAssembler
     set_default_costs
     set_default_commissions
     set_options
-    rental
   end
 
   def add_or_replace_cost(**new_costs)
@@ -22,6 +28,7 @@ class RentalAssembler
   end 
 
 private
+
   def set_options
     rental.options = default_options
   end
@@ -58,32 +65,32 @@ end
 
 
 ###########
-#Setup
-###########
+# Setup
+#
+# Takes JSON rental data 
+# and returns an array of rental objects
+#
 
 module SetupHelper
   def self.create_rentals(file:) 
     data = parse_json(file)
     data["rentals"].map do |r|
       vehicle = find_car(data, r)
-      rental  = create_rental(r, vehicle) 
-      rental_mod_data = find_rental_mod(data, r)
-      rental_mod = create_rental_mod(rental_mod_data, r, vehicle) 
+      rental  = create_rental(r, vehicle, data["rental_modifications"]) 
       yield(rental) 
-      yield(rental_mod) if rental_mod
-      rental.rental_mod = rental_mod
       rental
     end
   end
   
-  def self.create_rental(r, vehicle)
+  def self.create_rental(rental, vehicle, rental_modifications)
     Rental.new(
-      deductible_reduction: r["deductible_reduction"],
-      id:          r["id"], 
-      start_date:  r["start_date"], 
-      end_date:    r["end_date"], 
-      distance:    r["distance"],
+      id:          rental["id"], 
+      start_date:  rental["start_date"], 
+      end_date:    rental["end_date"], 
+      distance:    rental["distance"],
       vehicle:     create_vehicle(vehicle),
+      deductible_reduction: rental["deductible_reduction"],
+      modifications: find_rental_mod(rental, rental_modifications)
     )
   end
 
@@ -95,9 +102,10 @@ module SetupHelper
     data.fetch("cars").find { |s| s["id"] == rental["car_id"] }
   end
   
-  def self.find_rental_mod(data, rental)
-    data.fetch("rental_modifications"){[]}.find do |r| 
-      r["rental_id"] == rental["id"]
+  def self.find_rental_mod(rental, rental_modifications)
+    return nil unless rental_modifications
+    rental_modifications.find do |modification| 
+      modification["rental_id"] == rental["id"]
     end 
   end
   
@@ -108,14 +116,6 @@ module SetupHelper
       price_per_km:  vehicle["price_per_km"]
     )
   end
- 
-  def self.create_rental_mod(rental_mod, rental, vehicle)
-    return nil unless rental_mod
-    modified_rental = rental.merge(rental_mod)
-    create_rental(modified_rental, vehicle)
-  end
-
-
 end
 
 
@@ -125,11 +125,30 @@ end
 
 class Vehicle
   attr_accessor :id, :price_per_day, :price_per_km
-
   def initialize( id:, price_per_day:, price_per_km:)
     @id            = id
     @price_per_day = price_per_day
     @price_per_km  = price_per_km
+  end
+end
+
+
+#########
+# Rental#create_modified
+# Returns a modified rental object
+#
+#
+
+class Rental
+  MODIFICATION_WHITELIST = [:id, :rental_id, :start_date, :end_date, :distance] 
+
+  def self.create_modified(original_rental)
+    modified_rental = original_rental.dup
+    original_rental.modifications.each do |name, val|
+      raise "invalid modification" unless MODIFICATION_WHITELIST.include? name.to_sym
+      modified_rental.define_singleton_method(name.to_sym) { val }
+    end
+   modified_rental
   end
 end
 
@@ -140,20 +159,24 @@ end
 
 class Rental
   require 'date'
-  attr_reader :id, :price, :distance, :deductible_reduction, :vehicle
-  attr_accessor :costs, :commissions, :options, :rental_mod
+  attr_reader :id, :price, :distance, :deductible_reduction, :vehicle, :modifications
+  attr_accessor :costs, :commissions, :options, :modified, :end_date, :start_date
   
-  def initialize(deductible_reduction:, id:, vehicle:, start_date:, end_date:, distance:)
+  def initialize(modifications:, 
+                 deductible_reduction:, 
+                 id:, 
+                 vehicle:, 
+                 start_date:, 
+                 end_date:, 
+                 distance:)
+
+    @modifications = modifications
     @deductible_reduction = deductible_reduction
     @id         = id 
     @vehicle    = vehicle  
     @start_date = start_date
     @end_date   = end_date
     @distance   = distance
-  end
-
-  def modified 
-    rental_mod
   end
 
   def price
@@ -171,24 +194,36 @@ class Rental
   def day_count
     (Date.parse(end_date).mjd - Date.parse(start_date).mjd) + 1
   end
-  
-private
-  attr_reader :end_date, :start_date
 end
 
 
 ###########
-#Reporter
-###########
+# Reporter
+# Namespace for classes related to RentalsDataReport 
+#
 
 module Reporter
-  def self.data_type_classes  
+  
+  ##########
+  #Available Data types 
+  #
+  def self.data_types
     { 
-      id: IDData, 
-      price: PriceData,  
-      commission: CommissionData, 
-      option: OptionData, 
+      id:             IDData, 
+      price:          PriceData,  
+      commission:     CommissionData, 
+      option:         OptionData, 
       payment_action: PaymentActionData
+    }
+  end
+
+  #######
+  #Available templates
+  #
+  def self.template_types
+    { 
+      rentals:              RentalsTemplate, 
+      rental_modifications: RentalModificationsTemplate,
     }
   end
 
@@ -201,67 +236,88 @@ module Reporter
     end
   end
 
-  class RentalsDataReport 
-    def initialize(*data_types)
-      @extensions = {} 
+
+  ######
+  # Creates report - output is determined by data types, and template type.  
+  #
+  class RentalsReport 
+    def initialize(template:,  data_types: )
+      @template   = setup_template template
       @data_types = setup_data_objects(data_types) 
     end
-
-    def modifications_template(rentals)
-      {
-        "rental_modifications" =>  
-          rentals.map do |rental|  
-            next unless rental.modified
-            {
-	      "id"         => rental.modified.id, 
-	      "rental_id"  => rental.id
-            }.merge data(rental, @extensions) 
-          end.compact
-      }
-    end
-
-    def template(rentals)
-      { "rentals" => rentals.map {|rental| data(rental, @extensions)} }
-    end
-   
-    def add_extension(**object)
-      @extensions = @extensions.merge(object)
-      self
-    end
     
-    private
+    def create(rentals)
+      @template.new.generate(rentals, @data_types)
+    end
+
+  private
+
+    def setup_template template
+      Reporter.template_types.fetch(template) { raise 'need template' }
+    end
 
     def setup_data_objects data_types
       data_types.map do |name| 
-        if Reporter.data_type_classes.include? name 
-          Reporter.data_type_classes[name]
+        if Reporter.data_types.include? name 
+          Reporter.data_types[name]
         else
           raise DataTypeDoesNotExistError
         end
       end 
     end
+  end
 
-    def data(rental, extensions)
-      @data_types.reduce({}) do |hash, data|
-	hash.merge data.new.template(rental: rental, extensions: extensions)
+  class Template
+    def generate
+      raise NotImplementedError
+    end
+
+  private
+
+    def data(rental, data_types)
+      data_types.reduce({}) do |hash, data|
+	hash.merge(data.new.feed(rental: rental))
       end
     end
   end
 
+
+  class RentalModificationsTemplate < Template 
+    def generate(rentals, data_types) 
+      {
+        "rental_modifications" =>  
+          rentals.map do |rental|  
+            next unless rental.modifications
+            {
+	      "id"         => rental.modifications["id"], 
+	      "rental_id"  => rental.id
+            }.merge data(rental, data_types) 
+          end.compact
+      }
+    end
+  end
+
+  class RentalsTemplate < Template
+    def generate(rentals, data_types)
+      { "rentals" => rentals.map {|rental| data(rental, data_types)} }
+    end
+  end
+
+
   class IDData < RentalData
-    def template(rental:, extensions:)
+    def feed(rental:)
       { "id" => rental.id }
     end
   end
 
   class PriceData < RentalData
-    def template(rental:, extensions:)
+    def feed(rental:)
       { "price" => rental.price }
     end
   end
 
   class CommissionData < RentalData
-    def template(rental:, extensions:)
+    def feed(rental:)
       {  
 	"commission" => rental.commissions.reduce({}) do |hash, (name, commission)|
 	  hash[name.to_s + "_fee"] = commission.fee(rental); hash 
@@ -271,7 +327,7 @@ module Reporter
   end
 
   class OptionData < RentalData
-    def template(rental:, extensions:)
+    def feed(rental:)
       {  
 	"options" =>
 	  rental.options.reduce({}) do |hash, (name, option)| 
@@ -282,12 +338,10 @@ module Reporter
   end
   
   class PaymentActionData < RentalData
-    def template(rental:, extensions:)
+    def feed(rental:)
       {
         "actions" =>
-          extensions.fetch(:payment_actions_builder)
-                    .create_payment_actions(rental) 
-                    .map do |action|
+           PaymentActionsBuilder.new.create_payment_actions(rental) .map do |action|
             { 
               "who"    => action.who,
               "type"   => action.type,
@@ -404,7 +458,9 @@ end
 
 #########
 #PaymentActionsBuilder
-########
+#
+#Creates a list of payment actions for a given rental.
+#
 
 class PaymentActionsBuilder
   attr_reader :actors
@@ -419,10 +475,9 @@ class PaymentActionsBuilder
 
   def create_payment_actions(rental)
     actors.map do |name, actor|
-      if rental.modified 
-	modified_rental = rental.modified
+      if rental.modifications 
 	ModifiedPaymentAction.new(original_rental: rental, 
-                                  modified_rental: modified_rental, 
+                                  modified_rental: Rental.create_modified(rental), 
                                   actor: actor)
       else
 	PaymentAction.new(rental, actor)
@@ -430,15 +485,15 @@ class PaymentActionsBuilder
     end
   end
 
-  private
+private
   
   def default_actors
     { 
-      driver: PaymentActor::Driver.new(name: 'driver'), 
-      owner:  PaymentActor::Owner.new(name: 'owner'), 
-      insurance: PaymentActor::Insurance.new(name: 'insurance'), 
+      driver:     PaymentActor::Driver.new(name: 'driver'), 
+      owner:      PaymentActor::Owner.new(name: 'owner'), 
+      insurance:  PaymentActor::Insurance.new(name: 'insurance'), 
       assistance: PaymentActor::Assistance.new(name: 'assistance'),
-      drivy: PaymentActor::Drivy.new(name: 'drivy') 
+      drivy:      PaymentActor::Drivy.new(name: 'drivy') 
     }
   end
 end
@@ -517,7 +572,6 @@ module PaymentActor
       @name = name
       default_action_setup 
       post_initialize
-      self
     end
      
     def amount
@@ -589,11 +643,11 @@ RSpec.describe "Integration Tests" do
   context "LEVEL 1" do 
     let(:rentals) do
        SetupHelper.create_rentals(file: "../level1/data.json") do |rental|
-	 RentalAssembler.new(rental)
+   RentalAssembler.new(rental)
       end
     end
     let(:correct_data) { SetupHelper.parse_json("../level1/output.json") }
-    let(:data)         { Reporter::RentalsDataReport.new(:id, :price).template(rentals) }
+    let(:data)         { Reporter::RentalsReport.new(template: :rentals, data_types: [:id, :price]).create(rentals) }
 
     it "gives correct data" do 
       expect(data).to eq(correct_data)
@@ -612,7 +666,7 @@ RSpec.describe "Integration Tests" do
        end
     end
     let(:correct_data) { SetupHelper.parse_json("../level2/output.json") }
-    let(:data)         { Reporter::RentalsDataReport.new(:id, :price).template(rentals) }
+    let(:data)         { Reporter::RentalsReport.new(template: :rentals, data_types: [:id, :price]).create(rentals) }
 
     it "gives correct data" do 
       expect(data).to eq(correct_data)
@@ -632,7 +686,7 @@ RSpec.describe "Integration Tests" do
     end
     let(:data_types) { [:id, :price, :commission ]}
     let(:correct_data) { SetupHelper.parse_json("../level3/output.json") }
-    let(:data) { Reporter::RentalsDataReport.new(*data_types).template(rentals) }
+    let(:data) { Reporter::RentalsReport.new(template: :rentals, data_types: data_types).create(rentals) }
 
     it "gives correct data" do 
       expect(data).to eq(correct_data)
@@ -647,13 +701,13 @@ RSpec.describe "Integration Tests" do
     let(:discount) { [[1..1, 0], [2..4, 0.10], [5..10, 0.30], [11..365, 0.50]] }
     let(:rentals) do
       SetupHelper.create_rentals(file: "../level4/data.json") do |rental|
-	RentalAssembler.new(rental)
+        RentalAssembler.new(rental)
                        .add_or_replace_cost(day: DayCost.new(discount: discount))      
-        end
+      end
     end
     let(:data_types) { [:id, :price, :commission, :option] }
     let(:correct_data) { SetupHelper.parse_json("../level4/output.json") }
-    let(:data) { Reporter::RentalsDataReport.new(*data_types).template(rentals) }
+    let(:data) { Reporter::RentalsReport.new(template: :rentals, data_types: data_types).create(rentals) }
 
     it "gives correct data" do 
       expect(data).to eq(correct_data)
@@ -672,23 +726,19 @@ RSpec.describe "Integration Tests" do
 
     let(:rentals) do
       SetupHelper.create_rentals(file: "../level5/data.json") do |rental|
-	RentalAssembler.new(rental).add_or_replace_cost(**cost)      
+         RentalAssembler.new(rental)
+                        .add_or_replace_cost(day: DayCost.new(discount: discount))      
       end
     end
 
     let(:data) do 
-      Reporter::RentalsDataReport.new(*data_types)
-                  .add_extension(**extensions)
-                  .template(rentals)
+      Reporter::RentalsReport.new(template: :rentals, data_types: data_types).create(rentals)
     end 
 
     it "gives correct data" do 
       expect(data).to eq(correct_data)
     end
   end
-
-  ##########################
-  ####Level 6
 
   context "LEVEL 6" do 
     let(:discount) { [[1..1, 0], [2..4, 0.10], [5..10, 0.30], [11..365, 0.50]] }
@@ -704,9 +754,7 @@ RSpec.describe "Integration Tests" do
     end
 
     let(:data) do 
-      Reporter::RentalsDataReport.new(*data_types)
-                  .add_extension(**extensions)
-                  .modifications_template(rentals)
+      Reporter::RentalsReport.new(template: :rental_modifications, data_types: data_types).create(rentals)
     end 
 
     it "gives correct data" do 
