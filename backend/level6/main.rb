@@ -199,7 +199,7 @@ end
 
 ###########
 # Reporter
-# Namespace for classes related to RentalsDataReport 
+# Namespace for classes related to RentalsReport 
 #
 
 module Reporter
