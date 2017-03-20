@@ -27,13 +27,13 @@ module Drivy
   class DrivyCommission < Commission
     def fee(rental)
       (rental.price * commission_rate).to_i -
-	rental.commissions.reduce(0) do |sum, (name, commission)|
-	if commission.class != DrivyCommission 
-	  (sum + commission.fee(rental)).to_i 
-	else
-	  sum + 0
-	end
-      end
+	(rental.commissions.reduce(0) do |sum, (name, commission)|
+	  if commission.class != DrivyCommission 
+	    (sum + commission.fee(rental)).to_i 
+	  else
+	    sum + 0
+	  end
+        end)
     end
   end
 

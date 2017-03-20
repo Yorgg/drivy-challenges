@@ -40,11 +40,7 @@ module Drivy
       end
 
       def self.create_vehicle(vehicle)
-	Vehicle.new(
-	  id:            vehicle["id"], 
-	  price_per_day: vehicle["price_per_day"], 
-	  price_per_km:  vehicle["price_per_km"]
-	)
+	Vehicle.new(vehicle["id"], vehicle["price_per_day"], vehicle["price_per_km"])
       end
     end
   end

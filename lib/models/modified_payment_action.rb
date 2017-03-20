@@ -1,12 +1,6 @@
 module Drivy
-  class ModifiedPaymentAction
-    attr_reader :reader, :actor, :rental, :modified_rental, :original_rental
-
-    def initialize(modified_rental:, original_rental:, actor:)
-      @actor  = actor
-      @original_rental = original_rental
-      @modified_rental = modified_rental
-    end
+  ModifiedPaymentAction = 
+    Struct.new(:actor, :original_rental, :modified_rental) do 
 
     def amount
       @amount ||= (raw_amount).abs
@@ -25,6 +19,7 @@ module Drivy
     end
 
     private
+
     def raw_amount
       actor.amount(modified_rental) - actor.amount(original_rental)
     end

@@ -24,11 +24,8 @@ module Drivy
     private
     
     def new_modified_payment_action(rental, actor)
-      ModifiedPaymentAction.new(
-        actor: actor,
-        original_rental: rental, 
-	modified_rental: Rental.create_modified(rental)                  
-      )
+      modified_rental = Rental.create_modified(rental)
+      ModifiedPaymentAction.new(actor, rental, modified_rental)   
     end
 
     def default_actors
