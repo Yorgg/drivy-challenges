@@ -1,14 +1,15 @@
 module Drivy
+  STANDARD_COMMISSION_RATE = 0.30
+
   class Commission
-    DEFAULT_RATE = 0.30
-    attr_reader :commission_rate
-
-    def initialize(rate: nil)
-      @commission_rate = rate || DEFAULT_RATE
-    end
-
     def fee(rental)
       raise NotImplementedError
+    end
+
+    private
+
+    def commission_rate
+      STANDARD_COMMISSION_RATE  
     end
   end
 
@@ -36,5 +37,4 @@ module Drivy
         end)
     end
   end
-
 end
