@@ -3,7 +3,7 @@ module Drivy
     Struct.new(:actor, :original_rental, :modified_rental) do 
 
     def amount
-      @amount ||= (raw_amount).abs
+      @amount ||= (payment_amount_difference).abs
     end
 
     def who
@@ -11,7 +11,7 @@ module Drivy
     end
 
     def type 
-      if raw_amount > 0 
+      if payment_amount_difference > 0 
 	actor.default_action_type 
       else
 	actor.reverse_action_type  
@@ -20,7 +20,7 @@ module Drivy
 
     private
 
-    def raw_amount
+    def payment_amount_difference
       actor.amount(modified_rental) - actor.amount(original_rental)
     end
   end
