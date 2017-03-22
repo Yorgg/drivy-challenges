@@ -18,14 +18,18 @@ module Drivy
 
     def total(rental)
       if @discount 
-	day_price = rental.vehicle_price_per_day
 	(1..rental.day_count).reduce(0) do |sum, day| 
-	  discount_rate = 1 - @discount.find{ |d| d[0].include? day }[1] 
-	  sum + (day_price * discount_rate).to_i   
+	  sum + rental.vehicle_price_per_day * discount_rate(day)
 	end
       else
 	rental.vehicle_price_per_day * rental.day_count
       end
     end 
+    
+    private
+ 
+    def discount_rate day
+      1 - @discount.find{ |d| d[0].include? day }[1] 
+    end
   end
 end
