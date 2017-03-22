@@ -1,8 +1,9 @@
 module Drivy
   module PaymentActor
+    ACTION_TYPES = {credit: 'credit', debit: 'debit'}
+
     class Actor
       attr_accessor :name, :default_action_setup, :default_action_type, :reverse_action_type
-      ACTION_TYPES = {credit: 'credit', debit: 'debit'}
 
       def initialize(name:)
 	@name = name
@@ -48,7 +49,9 @@ module Drivy
 
     class Owner < Actor 
       def amount(rental)
-	rental.price - rental.commissions.reduce(0) {|sum, (name, c)| sum + c.fee(rental) }
+	rental.price - (rental.commissions.reduce(0) do |sum, (name, c)| 
+          sum + c.fee(rental)
+        end)
       end
     end
 
